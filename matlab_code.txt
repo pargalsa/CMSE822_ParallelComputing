@@ -1,0 +1,140 @@
+% Matlab code for LBM- cylinder problem using D2Q9 Lattice-- BGK model
+
+
+clear all
+close all
+clc
+
+%% 2d Grid: Grid points %%%
+Nx=400;
+Ny=100;
+
+%% cylinder obstacle dimensions%%
+cyl_x = Nx/5+1;  
+cyl_y = Ny/2+3;   
+cyl_r = Ny/10+1;  % radius of the cylinder
+
+%% Centerline velocity, Reynold number, viscosity, relaxation time for LBM, iterations
+Uc   = 0.1;      % Centerline maximum velocity 
+Re     = 100;      % Reynolds number
+nu     = Uc * 2.*cyl_r / Re;  % kinematic viscosity
+omega  = 1. / (3*nu+1./2.);      % relaxation parameter
+iter   = 4000;  % total number of iterations
+
+tplot=50; % cycles
+
+% D2Q9 LATTICE CONSTANTS
+wt  = [4/9, 1/9,1/9,1/9,1/9, 1/36,1/36,1/36,1/36]; % weights
+cx = [  0,   1,  0, -1,  0,    1,  -1,  -1,   1]; % x velocity vector directions
+cy = [  0,   0,  1,  0, -1,    1,   1,  -1,  -1]; % y velocity vector directions
+opp = [ 1,   4,  5,  2,  3,    8,   9,   6,   7]; % required for bouncing back from wall
+
+col = [2:(Ny-1)]; % wall normal domain withing boundaries
+in  = 1;   % streamwise inlet location
+out = Nx;  % streamwise outlet location
+
+[y,x] = meshgrid(1:Ny,1:Nx); % Making grid out of the grid points in x and y.
+
+
+cyl = (x-cyl_x).^2 + (y-cyl_y).^2 <= cyl_r.^2; % for applying no slip BC at cylinder
+cyl(:,[1,Ny]) = 1;    % Location of top/bottom wall 
+bbRegion = find(cyl); % Boolean mask for bounce-back cells % this is going (numbering) along  row and finding ==1
+
+
+%%%% Initialization of the problem
+L = Ny-2; 
+y_phys = y-1.5;
+
+ux = 4 * Uc / (L*L) * (y_phys.*L-y_phys.*y_phys); % initialization at all points in domain
+uy = zeros(Nx,Ny); % no velocity in wall normal direction
+rho = 1; % density initialization-- same at all points
+
+%%% This is initialization of equilbirium distribution of populations at
+%%% all grid nodes for f0,f2...f8
+for i=1:9
+    cu = 3*(cx(i)*ux+cy(i)*uy); % multiplying velocity directions and velocity magnitude
+    fIn(i,:,:) = rho .* wt(i) .* ( 1 + cu + 1/2*(cu.*cu) - 3/2*(ux.^2+uy.^2) ); % PDF initialization at all nodes
+end
+
+
+
+
+% MAIN LOOP (TIME CYCLES)
+for cycle = 1:iter
+
+    % MACROSCOPIC VARIABLES ----% calculating velocities from summing using
+    % reshape and then calcualting new ux and uy after applying fin 
+    rho = sum(fIn);
+    ux  = reshape ( (cx * reshape(fIn,9,Nx*Ny)), 1,Nx,Ny) ./rho;
+    uy  = reshape ( (cy * reshape(fIn,9,Nx*Ny)), 1,Nx,Ny) ./rho;
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    
+	  
+    % MACROSCOPIC (DIRICHLET) BOUNDARY CONDITIONS
+      % Inlet: Poiseuille profile
+    y_phys = col-1.5;
+    ux(:,in,col) = 4 * Uc / (L*L) * (y_phys.*L-y_phys.*y_phys); % parabolic profile
+    uy(:,in,col) = 0;
+    
+    %%% rho is calculated from velocity based on Zou/He Boundary condition
+    rho(:,in,col) = 1 ./ (1-ux(:,in,col)) .* (sum(fIn([1,3,5],in,col)) + 2*sum(fIn([4,7,8],in,col)) );
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    
+      % Outlet: Constant pressure-- this is keeping density constant,
+      % calculate velocity from Zou/He Boundary condition
+    rho(:,out,col) = 1; % constant density
+    ux(:,out,col) = -1 + 1 ./ (rho(:,out,col)) .* (sum(fIn([1,3,5],out,col)) + 2*sum(fIn([2,6,9],out,col)) );
+    uy(:,out,col)  = 0;
+    
+    
+    
+
+    % MICROSCOPIC BOUNDARY CONDITIONS: INLET (Zou/He BC)
+    fIn(2,in,col) = fIn(4,in,col) + 2/3*rho(:,in,col).*ux(:,in,col); 
+    fIn(6,in,col) = fIn(8,in,col) + 1/2*(fIn(5,in,col)-fIn(3,in,col)) ... 
+                                    + 1/2*rho(:,in,col).*uy(:,in,col) ...
+                                    + 1/6*rho(:,in,col).*ux(:,in,col); 
+    fIn(9,in,col) = fIn(7,in,col) + 1/2*(fIn(3,in,col)-fIn(5,in,col)) ... 
+                                    - 1/2*rho(:,in,col).*uy(:,in,col) ...
+                                    + 1/6*rho(:,in,col).*ux(:,in,col); 
+
+    % MICROSCOPIC BOUNDARY CONDITIONS: OUTLET (Zou/He BC)%%%%%%%%
+    fIn(4,out,col) = fIn(2,out,col) - 2/3*rho(:,out,col).*ux(:,out,col); 
+    fIn(8,out,col) = fIn(6,out,col) + 1/2*(fIn(3,out,col)-fIn(5,out,col)) ... 
+                                      - 1/2*rho(:,out,col).*uy(:,out,col) ...
+                                      - 1/6*rho(:,out,col).*ux(:,out,col); 
+    fIn(7,out,col) = fIn(9,out,col) + 1/2*(fIn(5,out,col)-fIn(3,out,col)) ... 
+                                      + 1/2*rho(:,out,col).*uy(:,out,col) ...
+                                      - 1/6*rho(:,out,col).*ux(:,out,col); 
+                                  
+     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+    % COLLISION STEP
+    for i=1:9
+       cu = 3*(cx(i)*ux+cy(i)*uy);
+       fEq(i,:,:)  = rho .* wt(i) .* ...
+                       ( 1 + cu + 1/2*(cu.*cu)  - 3/2*(ux.^2+uy.^2) );
+       fOut(i,:,:) = fIn(i,:,:) - omega .* (fIn(i,:,:)-fEq(i,:,:));
+    end
+
+    % OBSTACLE (BOUNCE-BACK)
+    for i=1:9
+         fOut(i,bbRegion) = fIn(opp(i),bbRegion);
+    end
+
+    % STREAMING STEP
+    for i=1:9
+       fIn(i,:,:) = circshift(fOut(i,:,:), [0,cx(i),cy(i)]);
+    end
+
+    % VISUALIZATION
+    if (mod(cycle,tplot)==1)
+        u = reshape(sqrt(ux.^2+uy.^2),Nx,Ny);
+        u(bbRegion) = nan;
+        imagesc(u');
+        axis equal off; drawnow
+    end
+end
+
+
+
